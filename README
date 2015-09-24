@@ -1,0 +1,22 @@
+Markov chain test application
+
+BUILD:
+./make_.sh
+
+TEST:
+./test/test.sh
+
+USAGE:
+  markov_chain OPTIONS
+  OPTIONS:
+    -h, --help - print help
+    -a, --action - 'learn' of 'predict' mode
+    -i, --input - input file with list of urls, omitted for std::cin
+    -o, --output - output file, omitted for std::cout
+    -n, --order - order of markov chain, default 1
+    -m, --model - file with model for the predict mode
+    -c, --count - count of words to predict, default 1
+  
+  Examples:
+    mail_test -a learn -i files.txt -o markov_chain.txt -n 2
+    mail_test -a predict -m markov_chain.txt

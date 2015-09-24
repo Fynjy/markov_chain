@@ -1,0 +1,9 @@
+  A Markov chain is a stochastic process with the Markov property. The term "Markov chain" refers 
+to the sequence of random variables such a process moves through, with the Markov property defining 
+serial dependence only between adjacent periods (as in a "chain"). It can thus be used for describing 
+systems that follow a chain of linked events, where what happens next depends only on the current 
+state of the system.
+  In the literature, different kinds of Markov process are designated as "Markov chains". Usually 
+the term is reserved for a process with a discrete set of times, i.e. a discrete-time Markov chain 
+(DTMC).[2] On the other hand, a few authors use the term "Markov process" to refer to a continuous-time 
+Markov chain without explicit mention.[3][4]
