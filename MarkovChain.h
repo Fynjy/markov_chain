@@ -49,7 +49,7 @@ public:
 
     for (; i != state_.end(); ++i)
     {
-      oss << '_' << *i;
+      oss << SEPARATOR << *i;
     }
 
     return oss.str();
@@ -185,10 +185,8 @@ private:
   typedef std::unordered_map<std::string, Transitions> TransitionsMap;
 
 private:
-  static const std::string EMPTY_;
+  const std::string EMPTY_;
   TransitionsMap transitions_;
 };
-
-const std::string MarkovChain::EMPTY_;
 
 #endif /* MARKOVCHAIN_H_ */

@@ -2,26 +2,19 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <locale>
 #include <random>
 #include <vector>
 
-#include "CurlStream.h"
+#include <boost/iostreams/stream.hpp>
+#include <boost/iostreams/device/file_descriptor.hpp>
+#include <boost/program_options.hpp>
+
+#include "CurlDevice.h"
 #include "MarkovChain.h"
-#include "Options.h"
 #include "WordIterator.h"
 
 std::default_random_engine generator(std::chrono::system_clock::now().time_since_epoch().count());
-
-class UsageException
-:
-  public std::runtime_error
-{
-public:
-  UsageException(const char* what)
-  :
-    std::runtime_error(what)
-  {}
-};
 
 class In
 {
@@ -88,23 +81,23 @@ std::vector<std::string> read_urls(const std::string& input)
   std::vector<std::string> urls;
   In in(input);
 
-  std::string url;
-
-  while (std::getline(in.is(), url))
+  for (std::string url; std::getline(in.is(), url);)
   {
     urls.push_back(url);
   }
 
-  return std::move(urls);
+  return urls;
 }
 
-std::unique_ptr<MarkovChain> download_file(const std::string& url, std::size_t n)
+std::unique_ptr<MarkovChain> learn_by_one_file(const std::string& url, std::size_t n)
 {
-  CurlStream curl_stream(url);
+  Curl curl(url);
+  typedef boost::iostreams::stream<boost::iostreams::file_descriptor_source> CurlStream;
+  CurlStream curl_stream(fileno(curl.handle()), boost::iostreams::close_handle);
 
-  std::unique_ptr<MarkovChain> markov_chain(new MarkovChain());
   WordIterator it(curl_stream);
 
+  std::unique_ptr<MarkovChain> markov_chain(new MarkovChain());
   MarkovChainState state(n);
 
   while (it != WordIterator())
@@ -118,36 +111,55 @@ std::unique_ptr<MarkovChain> download_file(const std::string& url, std::size_t n
     ++it;
   }
 
+  const auto curl_exit_code = curl.close();
+
+  if (curl_exit_code)
+  {
+    std::ostringstream oss;
+    oss << "curl returned error: " << curl_exit_code << " for '" << url << "'";
+    throw std::runtime_error(oss.str());
+  }
+
   return markov_chain;
 }
 
-void learn(const ProgramOptions& program_options)
+void learn(
+  const std::string& input,
+  const std::string& output,
+  std::size_t n)
 {
-  const std::vector<std::string> urls(read_urls(program_options.input));
+  const std::vector<std::string> urls(read_urls(input));
   std::vector<std::future<std::unique_ptr<MarkovChain>>> futures;
 
   for (const auto& url : urls)
   {
-    futures.emplace_back(std::async(std::launch::async, download_file, url, program_options.n));
+    futures.emplace_back(std::async(std::launch::async, learn_by_one_file, url, n));
   }
 
   std::unique_ptr<MarkovChain> markov_chain;
 
   for (auto& f : futures)
   {
-    std::unique_ptr<MarkovChain> chain = f.get();
+    try
+    {
+      std::unique_ptr<MarkovChain> chain = f.get();
 
-    if (!markov_chain)
-    {
-      markov_chain.swap(chain);
+      if (!markov_chain)
+      {
+        markov_chain.swap(chain);
+      }
+      else
+      {
+        markov_chain->merge(*chain);
+      }
     }
-    else
+    catch (std::exception& ex)
     {
-      markov_chain->merge(*chain);
+      std::cerr << "Got error: " << ex.what() << std::endl;
     }
   }
 
-  Out out(program_options.output);
+  Out out(output);
 
   if (markov_chain)
   {
@@ -155,31 +167,29 @@ void learn(const ProgramOptions& program_options)
   }
 }
 
-void predict(const ProgramOptions& program_options)
+void predict(
+  const std::string& input,
+  const std::string& output,
+  const std::string& model,
+  std::size_t count)
 {
-  if (program_options.model.empty())
-  {
-    throw UsageException("model file not set");
-  }
-
   MarkovChain chain;
-
-  std::ifstream ifs(program_options.model);
+  std::ifstream ifs(model);
 
   if (!ifs)
   {
     std::ostringstream oss;
-    oss << "Can't open model file '" << program_options.model << "': " << std::strerror(errno);
+    oss << "Can't open model file '" << model << "': " << std::strerror(errno);
     throw std::runtime_error(oss.str());
   }
 
-  Out out(program_options.output);
+  Out out(output);
   chain.load(ifs);
 
-  In in(program_options.input);
+  In in(input);
   MarkovChainState state(WordIterator(in.is()), WordIterator());
 
-  for (std::size_t i = 0; i < program_options.count; ++i)
+  for (std::size_t i = 0; i < count; ++i)
   {
     const std::string word = chain.predict(state.str());
 
@@ -193,55 +203,118 @@ void predict(const ProgramOptions& program_options)
   }
 }
 
+void print_help(const boost::program_options::options_description& options_desc)
+{
+  options_desc.print(std::cout);
+  std::cout <<
+    "Examples:\n"
+    "  markov_chain -a learn -i files.txt -o markov_chain.txt -n 2\n"
+    "  markov_chain -a predict -m markov_chain.txt\n";
+}
+
+enum class Action
+{
+  Learn,
+  Predict
+};
+
+std::istream& operator>>(std::istream& in, Action& action)
+{
+  std::string token;
+  in >> token;
+
+  if (token == "learn")
+  {
+    action = Action::Learn;
+  }
+  else if (token == "predict")
+  {
+    action = Action::Predict;
+  }
+  else
+  {
+    throw boost::program_options::validation_error(
+      boost::program_options::validation_error::invalid_option_value,
+      "action",
+      token);
+  }
+
+  return in;
+}
+
 int main(int argc, char** argv)
 {
-  const std::string USAGE = "Usage:\n"
-    "  mail_test OPTIONS\n"
-    "  OPTIONS:\n"
-    "    -h, --help - print help\n"
-    "    -a, --action - 'learn' of 'predict' mode\n"
-    "    -i, --input - input file with list of urls, omitted for std::cin\n"
-    "    -o, --output - output file, omitted for std::cout\n"
-    "    -n, --order - order of markov chain, default 1\n"
-    "    -m, --model - file with model for the predict mode\n"
-    "    -c, --count - count of words to predict, default 1\n"
-    "Examples:\n"
-    "  mail_test -a learn -i files.txt -o markov_chain.txt -n 2\n"
-    "  mail_test -a predict -m markov_chain.txt";
+  std::locale::global(std::locale(""));
+
+  Action action;
+  std::string input;
+  std::string output;
+  std::string model;
+  std::size_t order;
+  std::size_t count;
+
+  boost::program_options::options_description options_desc("Markov chain utility.\n"
+    "Usage:\n"
+    "  markov_chain OPTIONS\n"
+    "OPTIONS");
+  options_desc.add_options()
+    ("help,h", "print help")
+    ("action,a", boost::program_options::value<Action>(&action)->required(), "'learn' or 'predict' mode")
+    ("input,i", boost::program_options::value<std::string>(&input), "input file with list of urls, omitted for std::cin")
+    ("output,o", boost::program_options::value<std::string>(&output), "output file, omitted for std::cout")
+    ("order,n", boost::program_options::value<std::size_t>(&order)->default_value(1), "order of markov chain, default 1")
+    ("model,m", boost::program_options::value<std::string>(&model), "file with model for the predict mode")
+    ("count,c", boost::program_options::value<std::size_t>(&count)->default_value(1), "count of words to predict, default 1");
+
+  boost::program_options::variables_map program_options;
 
   try
   {
-    const ProgramOptions program_options = parse_program_options(argc, argv);
+    boost::program_options::store(boost::program_options::parse_command_line(argc, argv, options_desc), program_options);
 
-    if (program_options.print_help)
+    if (program_options.count("help"))
     {
-      std::cout << USAGE << std::endl;
+      print_help(options_desc);
       return 0;
     }
 
-    if (program_options.action == ProgramOptions::Learn)
+    boost::program_options::notify(program_options);
+  }
+  catch (std::exception& ex)
+  {
+    std::cerr << "Argument error: " << ex.what() << std::endl;
+    print_help(options_desc);
+    return 1;
+  }
+
+  try
+  {
+    if (action == Action::Learn)
     {
-      learn(program_options);
+      learn(input, output, order);
     }
-    else if (program_options.action == ProgramOptions::Predict)
+    else if (action == Action::Predict)
     {
+      if (model.empty())
+      {
+        throw boost::program_options::validation_error(
+          boost::program_options::validation_error::invalid_option_value,
+          "model");
+      }
+
       const std::chrono::time_point<std::chrono::system_clock> start(std::chrono::system_clock::now());
 
-      predict(program_options);
+      predict(input, output, model, count);
 
       const std::chrono::time_point<std::chrono::system_clock> end = std::chrono::system_clock::now();
       const long elapsed_seconds = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
       std::cout << "\nelapsed time: " << elapsed_seconds << "ms\n";
     }
-    else
-    {
-      throw UsageException("Action not set");
-    }
   }
-  catch (UsageException& ex)
+  catch (boost::program_options::validation_error& ex)
   {
-    std::cerr << ex.what() << std::endl;
-    std::cout << USAGE << std::endl;
+    std::cerr << "Argument error: " << ex.what() << std::endl;
+    print_help(options_desc);
     return 1;
   }
   catch (std::exception& ex)

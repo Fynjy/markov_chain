@@ -1,10 +1,10 @@
 Markov chain test application
 
 BUILD:
-./make_.sh
+make
 
 TEST:
-./test/test.sh
+make check
 
 USAGE:
   markov_chain OPTIONS
