@@ -163,7 +163,7 @@ public:
 
     if (it != transitions_.end() && it->second.n)
     {
-      std::uniform_int_distribution<std::size_t> distribution(0, it->second.n);
+      std::uniform_int_distribution<std::size_t> distribution(0, it->second.n - 1);
       const std::size_t r = distribution(generator);
       std::size_t curr = 0;
 

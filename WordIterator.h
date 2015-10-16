@@ -18,7 +18,6 @@ public:
   WordIterator(std::istream& is)
   :
     is_(&is),
-    loc_(is_->getloc()),
     eof_flag_(false)
   {
     operator++ ();
